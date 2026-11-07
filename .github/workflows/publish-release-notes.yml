@@ -1,0 +1,47 @@
+name: Publish approved release notes
+on:
+  repository_dispatch:
+    types: [svartalfheim-release]
+permissions:
+  contents: write
+concurrency:
+  group: public-release-notes
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Validate and render release entry
+        env:
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        run: |
+          python3 - <<'PY'
+          import json,os,re,html,pathlib
+          p=json.loads(os.environ["PAYLOAD"])
+          version=p.get("version","")
+          date=p.get("date","")
+          notes=p.get("notes","")
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+",version): raise SystemExit("Invalid version")
+          if not re.fullmatch(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}",date): raise SystemExit("Invalid date")
+          if not isinstance(notes,str) or len(notes)>12000: raise SystemExit("Invalid notes")
+          blocked=[r"abhish(?:ek|roy)",r"wheresroy",r"ruimzicht",r"/Users/[^\s]+",r"file://",r"github\.com/abhishroy",r"gh[pousr]_[A-Za-z0-9]{20,}",r"github_pat_[A-Za-z0-9_]{20,}",r"-----BEGIN .*PRIVATE KEY",r"(?i)authorization\s*:\s*bearer\s+\S+"]
+          for pattern in blocked:
+            if re.search(pattern,notes,re.I): raise SystemExit("Release notes privacy gate failed")
+          page=pathlib.Path("releases/index.html")
+          content=page.read_text()
+          marker='<article class="release">'
+          if 'data-release="'+version+'"' in content: raise SystemExit("Version already published")
+          safe_notes="<p>"+html.escape(notes).replace("\n","</p><p>")+"</p>"
+          entry='<article class="release" data-release="'+version+'"><div class="eyebrow">VS Code extension · Published</div><h2>'+version+'</h2><p class="meta">'+date+'</p>'+safe_notes+'</article>'
+          if marker not in content: raise SystemExit("Release page insertion point missing")
+          page.write_text(content.replace(marker,entry+marker,1))
+          PY
+      - name: Commit public release notes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add releases/index.html
+          git diff --cached --quiet || (git commit -m "docs: publish verified release notes" && git push)
